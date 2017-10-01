@@ -1,0 +1,106 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Yifan XIA"
+date: "23 Sep 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+## Introduction
+```{r}
+library(caret)
+library(parallel)
+library(doMC)
+registerDoMC(cores = detectCores()-1)
+set.seed(1234)
+```
+This project aims at predicting whether barbell lifts are correctly performed based on accelerometer measurements. The dataset has been divided into a training set and a testing set in prior.
+## Getting and cleaning data
+We load the training and test data sets.
+```{r, results='hide'}
+quiz.testing <- read.csv('pml-testing.csv')
+pmlTraining <- read.csv('pml-training.csv')
+str(quiz.testing);str(pmlTraining)
+```
+A quick look into both datasets leads to the following observations:  
+1. Many features in both training and test sets contains only missing values *NA*;  
+2. Not all features in the training set are not contained in the test set;  
+3. Some features in the training set are mistakenly considered as "factor" while they should be of "numeric" type (*e.g.* kurtosis_roll_arm) and contain many missing values. 
+The 1st and 2nd observations suggest that we must preprocess so that both datasets has the same features (except the *classe*). Afterwards, if any features described in the 3rd observation remain, than we need to find out strategies for missing value imputation (knn, etc.). Meanwhile, some descriptive and time-recording features, *i.e.* user_name and cvtd_timestamp, should be excluded from datasets.
+
+```{r}
+noNaTest <- colnames(quiz.testing)[colSums(is.na(quiz.testing))==0]
+uselessFeats <- c('user_name','raw_timestamp_part_1','raw_timestamp_part_2','cvtd_timestamp','X','new_window','num_window')
+usefulFeats <- setdiff(noNaTest, uselessFeats)
+quiz.testing <- quiz.testing[, usefulFeats]
+pmlTraining <- pmlTraining[, c(usefulFeats[-length(usefulFeats)], 'classe')]
+str(pmlTraining)
+```
+Good news! No feature described in the 3rd observation appears in the final feature list. Our definitive training dataset has therefore 56 features including the output *classe*.
+
+As the test set is only used for the quiz, it does not have the *classe* feature, and therefore cannot be used for any out-of-sample validation. Thus it is still necessary to split the training set into a REAL training set and a test set for validation.
+```{r}
+inTrain <- createDataPartition(pmlTraining$classe, p=0.7, list = FALSE)
+training <- pmlTraining[inTrain,]
+testing <- pmlTraining[-inTrain,]
+str(training)
+```
+There are 53 features (not including *class*) remaining in the dataset. Dumping all these features into our training model is definitely a bad idea. On one hand, too many features would make it time-consuming to train our model; on the other hand, a model with too many features would be much less interpretable than one with fewer features. In the next part, we will shortlist the features and choose the most appropriate ones.
+
+## Feature selection
+Our goal in this part is to select the most relevant and informative features to train the prediction model. We use a criterion based on correlation. 
+```{r, fig.height=8}
+corTrain <- c()
+for(i in 2:(length(training)-1)){
+        corTrain <- c(corTrain, cor(as.numeric(training$classe),
+                                    as.numeric(training[,i])))
+}
+names(corTrain) <- colnames(training)[2:(length(training)-1)]
+barplot(sort(abs(corTrain)), las = 2, ylim = c(0,0.4))
+abline(0.1, 0, lty = 'dashed', lwd = 4, col = 'blue')
+```
+
+The above figure show how each feature is correlated with the output. We fix arbitrarily 0.1 as the threshold below which the feature is considered to have a neglectable influence on the output.
+```{r}
+selFeat <- names(corTrain)[abs(corTrain)>0.1]
+str(training[,selFeat])
+```
+We hence obtaine 15 features based on which we will train the prediction model.
+
+## Machine Learning
+We first build the training formula by the following:
+```{r}
+trainFormula <- paste('classe', paste(selFeat, collapse = '+'), sep = '~')
+```
+As we have a classification problem with multiple outputs (more than two), we fit a ** Random Forest** model to the training set with a 10-fold cross-validation.
+```{r}
+rfControl <- trainControl(method = 'cv', number = 10)
+modelRf <- train(as.formula(trainFormula), data = training, method = 'rf', ntree = 500, trControl = rfControl)
+```
+```{r}
+modelRf
+```
+
+The RF model is then applied on the testing set:
+```{r}
+predClass <- predict(modelRf, testing)
+confusionMatrix(testing$classe, predClass)
+```
+```{r}
+accuracy <- postResample(predClass, testing$classe)
+accuracy
+```
+```{r}
+oose <- 1-accuracy[1]
+names(oose)<-c('Out-of-sample Error')
+oose
+```
+
+## Predicting the quiz test data
+```{r}
+quiz.pred <- predict(modelRf, quiz.testing)
+quiz.pred
+```
